@@ -2,6 +2,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.shortcuts import render, redirect
 from django.contrib import messages
+from django.core.files.storage import default_storage
 from core.models import *
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -916,13 +917,72 @@ def update_profile(request):
     return redirect('profile')
 
 
+def _delete_stored_files(names):
+    for name in names:
+        try:
+            default_storage.delete(name)
+        except Exception:
+            # Best effort: an orphaned image file is harmless, the account data is already gone.
+            pass
+
+
+def _delete_account_data(user, user_type):
+    """Delete a buyer/seller account and its wallet.
+
+    Accounts that appear in other users' order history (a buyer's orders, or a seller's
+    sold products) can't be removed without breaking that history, because orders protect
+    their address and products. Those accounts are anonymized instead: personal details,
+    wallet, cart, notifications, unused addresses and unsold products are removed, and the
+    email is freed so the person can sign up again.
+    """
+    with transaction.atomic():
+        wallet = user.wallet
+        if user_type == 'buyer':
+            has_history = Order.objects.filter(buyer=user).exists()
+            products = Product.objects.none()
+        else:
+            has_history = OrderItem.objects.filter(product__seller=user).exists()
+            products = user.products.filter(orderitem__isnull=True) if has_history else user.products.all()
+        image_names = [product.image.name for product in products if product.image]
+
+        if not has_history:
+            user.delete()
+        else:
+            Notification.objects.filter(**{user_type: user}).delete()
+            Address.objects.filter(**{user_type: user}, orders__isnull=True).delete()
+            if user_type == 'buyer':
+                Cart.objects.filter(buyer=user).delete()
+            else:
+                Inventory.objects.filter(product__seller=user).delete()
+                products.delete()
+
+            user.name = 'Deleted user'
+            user.email = f'deleted-{user_type}-{user.id}@deleted.invalid'
+            user.phone = ''
+            user.password = ''
+            user.wallet = None  # detach first: deleting the wallet would cascade to this row
+            user.save()
+
+        # The wallet is the parent side of the one-to-one, so deleting the user leaves it behind.
+        if wallet:
+            wallet.delete()
+        transaction.on_commit(lambda: _delete_stored_files(image_names))
+
+
 def delete_account(request):
     user, user_type = _get_valid_session_user(request)
     if not user:
         return redirect('signin_page')
 
     if request.method == 'POST':
-        user.delete()
+        if user_type == 'buyer' and Order.objects.filter(buyer=user, status='Pending').exists():
+            messages.error(request, 'You have pending orders. Please wait until sellers approve or reject them before deleting your account.')
+            return redirect('profile')
+        if user_type == 'seller' and OrderItem.objects.filter(product__seller=user, status='Pending').exists():
+            messages.error(request, 'You have order items waiting for your approval. Please approve or reject them before deleting your account.')
+            return redirect('profile')
+
+        _delete_account_data(user, user_type)
         request.session.flush()
         messages.success(request, 'Your account has been deleted.')
         return redirect('signin_page')

@@ -7,7 +7,9 @@ from urllib.parse import parse_qs, urlparse
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Buyer, Inventory, Product, Seller
+from core.models import (
+	Address, Buyer, Inventory, Notification, Order, OrderItem, Product, Seller, Transaction, Wallet,
+)
 
 
 def _fake_id_token(**claims):
@@ -199,6 +201,130 @@ class AccountSessionTests(TestCase):
 		self.assertRedirects(response, reverse('signin_page'))
 		self.assertFalse(Seller.objects.filter(id=seller.id).exists())
 		self.assertIsNone(self.client.session.get('user_id'))
+
+
+class AccountDeletionTests(TestCase):
+	def setUp(self):
+		self.buyer = Buyer.objects.create(name='Bea Buyer', email='bea@example.com', wallet=Wallet.objects.create(balance=500))
+		self.seller = Seller.objects.create(name='Sid Seller', email='sid@example.com', wallet=Wallet.objects.create(balance=200))
+		Transaction.objects.create(wallet=self.buyer.wallet, transaction_type='add_funds', amount=500, balance_after=500, description='seed')
+		Transaction.objects.create(wallet=self.seller.wallet, transaction_type='credit', amount=200, balance_after=200, description='seed')
+		self.warehouse = Address.objects.create(seller=self.seller, line1='Hub', city='Pune', state='MH', postal_code='411001', country='India')
+		self.product = Product.objects.create(seller=self.seller, name='Lamp', description='Desk lamp', price=100, sku='LAMP-1')
+		Inventory.objects.create(product=self.product, quantity=5, warehouse_location=self.warehouse)
+
+	def _place_order(self, status='Confirmed', item_status='Approved'):
+		address = Address.objects.create(buyer=self.buyer, line1='Home', city='Pune', state='MH', postal_code='411002', country='India')
+		order = Order.objects.create(buyer=self.buyer, address=address, total_amount=100, status=status)
+		item = OrderItem.objects.create(order=order, product=self.product, quantity=1, unit_price=100, line_total=100, status=item_status)
+		Notification.objects.create(buyer=self.buyer, order=order, notification_type='order_placed', message='placed')
+		Notification.objects.create(seller=self.seller, order=order, order_item=item, notification_type='approval_request', message='approve')
+		return order, address
+
+	def _delete(self, user, user_type):
+		session = self.client.session
+		session['user_id'] = user.id
+		session['user_type'] = user_type
+		session['user_name'] = user.name
+		session.save()
+		return self.client.post(reverse('delete_account'))
+
+	def test_buyer_without_orders_is_deleted_with_wallet(self):
+		wallet_id = self.buyer.wallet_id
+
+		response = self._delete(self.buyer, 'buyer')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertFalse(Buyer.objects.filter(id=self.buyer.id).exists())
+		self.assertFalse(Wallet.objects.filter(id=wallet_id).exists())
+		self.assertFalse(Transaction.objects.filter(wallet_id=wallet_id).exists())
+
+	def test_seller_without_sales_is_deleted_with_wallet_and_products(self):
+		wallet_id = self.seller.wallet_id
+
+		response = self._delete(self.seller, 'seller')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertFalse(Seller.objects.filter(id=self.seller.id).exists())
+		self.assertFalse(Wallet.objects.filter(id=wallet_id).exists())
+		self.assertFalse(Product.objects.filter(id=self.product.id).exists())
+
+	def test_deleted_seller_product_images_are_removed_from_storage(self):
+		Product.objects.filter(id=self.product.id).update(image='product_images/lamp-abc.jpg')
+
+		with mock.patch('core.views.default_storage.delete') as delete_file, \
+				self.captureOnCommitCallbacks(execute=True):
+			self._delete(self.seller, 'seller')
+
+		delete_file.assert_called_once_with('product_images/lamp-abc.jpg')
+
+	def test_buyer_with_past_orders_is_anonymized_and_history_kept(self):
+		order, order_address = self._place_order()
+		spare_address = Address.objects.create(buyer=self.buyer, line1='Spare', city='Pune', state='MH', postal_code='411003', country='India')
+		wallet_id = self.buyer.wallet_id
+
+		response = self._delete(self.buyer, 'buyer')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertIsNone(self.client.session.get('user_id'))
+		buyer = Buyer.objects.get(id=self.buyer.id)
+		self.assertEqual(buyer.name, 'Deleted user')
+		self.assertNotEqual(buyer.email, 'bea@example.com')
+		self.assertEqual(buyer.phone, '')
+		self.assertIsNone(buyer.wallet_id)
+		self.assertFalse(Wallet.objects.filter(id=wallet_id).exists())
+		self.assertFalse(Transaction.objects.filter(wallet_id=wallet_id).exists())
+		self.assertFalse(Notification.objects.filter(buyer=buyer).exists())
+		self.assertFalse(Address.objects.filter(id=spare_address.id).exists())
+		# The seller's view of the sale stays intact.
+		self.assertTrue(Order.objects.filter(id=order.id).exists())
+		self.assertTrue(Address.objects.filter(id=order_address.id).exists())
+		self.assertTrue(Notification.objects.filter(seller=self.seller).exists())
+
+	def test_seller_with_sales_is_anonymized_and_buyer_orders_kept(self):
+		order, _ = self._place_order()
+		unsold = Product.objects.create(seller=self.seller, name='Rug', description='Floor rug', price=50, sku='RUG-1')
+		wallet_id = self.seller.wallet_id
+
+		response = self._delete(self.seller, 'seller')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		seller = Seller.objects.get(id=self.seller.id)
+		self.assertEqual(seller.name, 'Deleted user')
+		self.assertNotEqual(seller.email, 'sid@example.com')
+		self.assertIsNone(seller.wallet_id)
+		self.assertFalse(Wallet.objects.filter(id=wallet_id).exists())
+		self.assertFalse(Notification.objects.filter(seller=seller).exists())
+		self.assertFalse(Product.objects.filter(id=unsold.id).exists())
+		self.assertFalse(Address.objects.filter(id=self.warehouse.id).exists())
+		# Sold product stays for the buyer's order history but is no longer on sale.
+		self.assertTrue(Product.objects.filter(id=self.product.id).exists())
+		self.assertFalse(Inventory.objects.filter(product=self.product).exists())
+		self.assertTrue(OrderItem.objects.filter(order=order, product=self.product).exists())
+
+	def test_deleted_email_can_sign_up_again(self):
+		self._place_order()
+		self._delete(self.buyer, 'buyer')
+
+		self.assertFalse(Buyer.objects.filter(email='bea@example.com').exists())
+		Buyer.objects.create(name='Bea Again', email='bea@example.com')
+
+	def test_buyer_with_pending_order_cannot_delete(self):
+		self._place_order(status='Pending', item_status='Pending')
+
+		response = self._delete(self.buyer, 'buyer')
+
+		self.assertRedirects(response, reverse('profile'), fetch_redirect_response=False)
+		self.assertEqual(Buyer.objects.get(id=self.buyer.id).email, 'bea@example.com')
+		self.assertEqual(self.client.session.get('user_id'), self.buyer.id)
+
+	def test_seller_with_pending_approval_cannot_delete(self):
+		self._place_order(status='Pending', item_status='Pending')
+
+		response = self._delete(self.seller, 'seller')
+
+		self.assertRedirects(response, reverse('profile'), fetch_redirect_response=False)
+		self.assertEqual(Seller.objects.get(id=self.seller.id).email, 'sid@example.com')
 
 
 class ItemsPageAuthTests(TestCase):

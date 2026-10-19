@@ -1592,7 +1592,7 @@
         <!-- DANGER ZONE -->
         <div class="danger-zone">
           <div class="danger-zone-title">⚠ Danger Zone</div>
-          <p>Permanently delete your account and all associated data. This action cannot be undone.</p>
+          <p>Permanently delete your account, wallet and personal details. If you have past orders, they are kept without your name or email so the other party's order history stays intact. This action cannot be undone.</p>
           <form method="POST" action="{% url 'delete_account' %}"
             onsubmit="return confirm('Are you absolutely sure? This will delete your account permanently.');">
             {% csrf_token %}

@@ -19,12 +19,12 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 - **Routing**:
   - `config/urls.py` includes `core.urls`
   - `core/urls.py` maps all UI + API endpoints
-- **Data layer**: models for buyer/seller, products, inventory, carts, orders, notifications, wallets, transactions, email OTP.
-- **Views**: mostly in `core/views.py`; chatbot endpoint in `core/chatbot_view.py`.
+- **Data layer**: models for buyer/seller, products, inventory, carts, orders, notifications, wallets, transactions.
+- **Views**: mostly in `core/views.py`; chatbot endpoint in `core/chatbot_view.py`; Google sign-in in `core/google_oauth.py`.
 
 ### Authentication/session model
-- API endpoints: `/signup`, `/signin`, `/signout` (JSON based)
-- UI endpoints: `/auth/signup`, `/auth/signin`, `/auth/signout`
+- Google sign-in only: `/auth/signin` (page with Buyer/Seller choice) → `/auth/google` → Google → `/auth/google/callback`
+- `/auth/signup` redirects to `/auth/signin`; sign out via `/auth/signout` (or JSON `POST /signout`)
 - Session keys drive identity:
   - `user_id`
   - `user_type` (`buyer` or `seller`)
@@ -40,24 +40,18 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 ## 3) Detailed feature inventory
 
 ## A. Authentication and account lifecycle
-- Signup/signin/signout APIs with status-code based responses.
-- Password hashing (`make_password` / `check_password`).
-- Web auth forms with flash-message feedback.
-- Password length validation (min 8).
+- "Continue with Google" sign-in (OAuth 2.0 authorization code flow with PKCE, no extra libraries).
+- The user picks Buyer or Seller first; the same Google account can hold one buyer and one seller account.
+- First sign-in creates the account (name from Google, phone added later on the profile page) and its wallet.
+- Session key is rotated on sign-in; flash-message feedback on errors.
 - Session invalidation on signout.
 - Account deletion (`delete_account`) with session flush.
 
-## B. OTP email verification flows
-- `EmailOTP` model supports:
-  - purpose: `signup`, `forgot_password`
-  - expiry + one-time use control
-- Signup verification flow:
-  1. submit form
-  2. OTP sent
-  3. verify OTP
-  4. create account + wallet
-- Forgot/reset flow with OTP resend option.
-- Best-effort email existence verification (SMTP RCPT check outside DEBUG).
+## B. Google sign-in details
+- Only Google-verified emails are accepted; the ID token's issuer, audience and expiry are checked.
+- `state` (CSRF) and PKCE `code_verifier` live in the session and are single-use.
+- No passwords or emails are sent by the app, so there is no OTP, forgot-password or SMTP setup.
+- Configure `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (Google Cloud Console → OAuth client, type "Web application") and register `https://<host>/auth/google/callback/` as a redirect URI for every host you use.
 
 ## C. Marketplace item discovery
 - `/items` page for in-stock products only.
@@ -146,8 +140,7 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 - Profile shows role-specific summary:
   - buyers: total spent + their orders/addresses
   - sellers: total earned from approved items + seller-relevant orders
-- Buyer can update basic profile fields.
-- Buyer can change password.
+- Buyer can update name and phone (email comes from Google).
 - Buyers can remove non-pending orders.
 
 ## L. Chatbot customer service
@@ -167,8 +160,8 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 - **Database**: Neon Postgres (Vercel Marketplace). `DATABASE_URL` switches settings to Postgres; without it, local dev keeps SQLite.
 - **Migrations** run on every Vercel build (`[tool.vercel.scripts] build` in `pyproject.toml`); `collectstatic` runs automatically (`STATIC_ROOT`).
 - **Uploads**: product images go to a public Vercel Blob store via `core/storage.py` when `BLOB_READ_WRITE_TOKEN` is set.
-- **Env vars** (Preview + Production): `DJANGO_SECRET_KEY`, `DEBUG=False`, `EMAIL_*`, `DEFAULT_FROM_EMAIL`, `GEMINI_API_KEY`; Neon/Blob vars are injected by the integrations.
-- Deploy: `vercel deploy` (protected preview) → `vercel promote <url>` (production).
+- **Env vars** (Preview + Production): `DJANGO_SECRET_KEY`, `DEBUG=False`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`; Neon/Blob vars are injected by the integrations.
+- Deploy: connected to GitHub — pushes to any branch create a protected preview (with its own Neon database branch); merging into `main` deploys production.
 
 ---
 
@@ -181,14 +174,13 @@ Main entities and responsibilities:
 - `Order`, `OrderItem`: multi-seller order with item-level approval statuses
 - `Notification`: role-targeted event feed
 - `Wallet`, `Transaction`: balance and accounting trail
-- `EmailOTP`: verification/reset OTP lifecycle
 
 ---
 
 ## 5) End-to-end behavior (high-level)
 
 ### Buyer journey
-1. Sign up/sign in (OTP validation for signup path).
+1. Continue with Google as a buyer (account created on first sign-in).
 2. Browse/search items.
 3. Add item(s) to cart.
 4. Select address and checkout.
@@ -198,7 +190,7 @@ Main entities and responsibilities:
 8. If rejected: full refund notification + transaction record.
 
 ### Seller journey
-1. Sign in.
+1. Continue with Google as a seller.
 2. Add/update products and inventory (with categories and warehouse addresses).
 3. Receive approval-request notifications for order items.
 4. Approve/reject each pending item.

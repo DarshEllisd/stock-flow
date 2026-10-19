@@ -1567,8 +1567,12 @@
             </div>
             <div class="info-field">
               <label>Email Address</label>
-              <span class="info-val" id="disp-email">{{ user_email }}</span>
-              <input type="email" name="email" value="{{ user_email }}" id="inp-email" style="display:none;" />
+              <span class="info-val muted">{{ user_email }}</span>
+            </div>
+            <div class="info-field">
+              <label>Phone</label>
+              <span class="info-val" id="disp-phone">{{ user_phone|default:"Not added" }}</span>
+              <input type="tel" name="phone" value="{{ user_phone }}" id="inp-phone" maxlength="20" style="display:none;" />
             </div>
             <div class="info-field">
               <label>Member Since</label>
@@ -1583,25 +1587,6 @@
           <div id="save-row" style="display:none; margin-top: 4px;">
             <button type="submit" class="btn-primary" style="padding: 11px 28px;">Save Changes</button>
           </div>
-        </form>
-
-        <!-- CHANGE PASSWORD -->
-        <div class="section-header" style="margin-top: 40px;">
-          <h2 class="section-title" style="font-size:20px;">Change <em>Password</em></h2>
-        </div>
-        <form method="POST" action="{% url 'change_password' %}">
-          {% csrf_token %}
-          <div class="info-grid" style="margin-bottom: 16px;">
-            <div class="info-field">
-              <label>Current Password</label>
-              <input type="password" name="old_password" placeholder="••••••••" />
-            </div>
-            <div class="info-field">
-              <label>New Password</label>
-              <input type="password" name="new_password" placeholder="••••••••" />
-            </div>
-          </div>
-          <button type="submit" class="btn-primary" style="padding: 11px 28px;">Update Password</button>
         </form>
 
         <!-- DANGER ZONE -->
@@ -1670,7 +1655,7 @@
     let editing = false;
     function toggleEdit() {
       editing = !editing;
-      const displays = ['name', 'email'];
+      const displays = ['name', 'phone'];
       displays.forEach(f => {
         document.getElementById('disp-' + f).style.display = editing ? 'none' : 'block';
         document.getElementById('inp-' + f).style.display = editing ? 'block' : 'none';

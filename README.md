@@ -52,6 +52,7 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 - `state` (CSRF) and PKCE `code_verifier` live in the session and are single-use.
 - No passwords or emails are sent by the app, so there is no OTP, forgot-password or SMTP setup.
 - Configure `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (Google Cloud Console → OAuth client, type "Web application") and register `https://<host>/auth/google/callback/` as a redirect URI for every host you use.
+- Full setup, design decisions and troubleshooting: [`google-oauth.md`](google-oauth.md).
 
 ## C. Marketplace item discovery
 - `/items` page for in-stock products only.

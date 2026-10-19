@@ -4,6 +4,8 @@ venv/
 *.pyc
 db.sqlite3
 .DS_Store
-.env
-migrations/
+.env*
+.vercel
+media/
+staticfiles/
 # Add anything else that you guys feel is ignorable

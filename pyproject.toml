@@ -5,6 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dj-database-url>=3.1.2",
     "django>=6.0.1",
+    "pillow>=13.0.0",
+    "psycopg[binary]>=3.3.6",
     "python-dotenv>=1.2.1",
 ]
+
+[tool.vercel.scripts]
+# Apply migrations to the Neon database on every Vercel build (collectstatic runs automatically).
+build = "python manage.py migrate --noinput"

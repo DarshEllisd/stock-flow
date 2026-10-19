@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% if page == 'privacy' %}Privacy Policy{% else %}Terms of Service{% endif %} — StockFlow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --forest:    #1a2e1f;
+      --forest-mid:#243328;
+      --copper:    #c87941;
+      --copper-lt: #e09060;
+      --cream:     #f5f0e8;
+      --cream-dim: #d9d0bc;
+      --border:    rgba(200,121,65,0.22);
+    }
+
+    body {
+      font-family: 'Jost', sans-serif;
+      background: linear-gradient(160deg, var(--forest) 0%, var(--forest-mid) 100%);
+      color: var(--cream);
+      min-height: 100vh;
+      line-height: 1.7;
+    }
+
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 28px 24px;
+    }
+    .nav a { color: var(--cream-dim); text-decoration: none; font-size: 13px; letter-spacing: 0.04em; }
+    .nav a:hover { color: var(--copper-lt); }
+    .nav .brand {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 22px;
+      color: var(--cream);
+      letter-spacing: 0.02em;
+    }
+
+    main {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 12px 24px 80px;
+    }
+
+    h1 {
+      font-family: 'Cormorant Garamond', serif;
+      font-weight: 400;
+      font-size: 44px;
+      line-height: 1.1;
+    }
+    .updated {
+      margin-top: 10px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--copper);
+    }
+    .intro {
+      margin-top: 24px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+      color: var(--cream-dim);
+      font-weight: 300;
+    }
+
+    h2 {
+      margin-top: 36px;
+      font-family: 'Cormorant Garamond', serif;
+      font-weight: 500;
+      font-size: 26px;
+      color: var(--cream);
+    }
+    p, li { font-size: 15px; font-weight: 300; color: var(--cream-dim); }
+    p { margin-top: 12px; }
+    ul { margin-top: 12px; padding-left: 20px; }
+    li { margin-top: 6px; }
+    strong { color: var(--cream); font-weight: 500; }
+    main a { color: var(--copper-lt); }
+
+    footer {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 24px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--cream-dim);
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    footer a { color: var(--cream-dim); }
+
+    @media (max-width: 600px) {
+      h1 { font-size: 34px; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a class="brand" href="{% url 'home' %}">StockFlow</a>
+    <a href="{% url 'signin_page' %}">Sign in</a>
+  </nav>
+
+  <main>
+    {% if page == 'privacy' %}
+    <h1>Privacy Policy</h1>
+    <div class="updated">Last updated 19 October 2026</div>
+    <p class="intro">
+      StockFlow is a demonstration marketplace that connects buyers and sellers. This page explains what
+      information StockFlow collects, how it is used and the choices you have.
+    </p>
+
+    <h2>Information we collect</h2>
+    <ul>
+      <li><strong>From Google sign-in:</strong> your name and email address, and confirmation that the email is verified. We request only the <em>openid</em>, <em>email</em> and <em>profile</em> scopes. We never see your Google password.</li>
+      <li><strong>Information you add:</strong> an optional phone number, delivery or warehouse addresses, and for sellers, product listings, prices, stock levels and product images.</li>
+      <li><strong>Activity in the app:</strong> your cart, orders, order approvals, notifications and wallet transactions.</li>
+      <li><strong>Chatbot messages:</strong> what you type into the customer-service chatbot.</li>
+    </ul>
+
+    <h2>How we use it</h2>
+    <ul>
+      <li>To sign you in and keep you signed in.</li>
+      <li>To run the marketplace: show listings, process orders, notify buyers and sellers, and keep wallet balances.</li>
+      <li>To answer chatbot questions. Your message, along with your name, email and a summary of your recent orders, cart, notifications (or, for sellers, your stock and pending approvals) and the product catalogue, is sent to Google's Gemini API to generate a reply.</li>
+    </ul>
+    <p>We do not sell your information or use it for advertising.</p>
+
+    <h2>Who can see it</h2>
+    <ul>
+      <li>Sellers see the buyer's name and order details, which can include the delivery address, for orders that include their products.</li>
+      <li>Buyers see the seller's name and email on product pages.</li>
+      <li>Product images are stored at public URLs so they can be displayed on product pages.</li>
+    </ul>
+
+    <h2>Where it is stored</h2>
+    <p>
+      StockFlow is hosted on Vercel. Account and order data is stored in a Neon Postgres database, and product
+      images are stored in Vercel Blob storage. These services may process data outside your country, including
+      in the United States.
+    </p>
+
+    <h2>Cookies</h2>
+    <p>
+      StockFlow uses only the cookies needed to keep you signed in (a session cookie) and to protect forms
+      (a CSRF cookie). Pages load fonts from Google Fonts. We do not use analytics or advertising cookies.
+    </p>
+
+    <h2>Your choices</h2>
+    <ul>
+      <li>You can update your name and phone number on your profile page.</li>
+      <li>You can delete your account from the profile page. This removes your profile, addresses, cart, orders and notifications. Some records may be kept where they are needed to keep other users' order history intact.</li>
+      <li>You can revoke StockFlow's access to your Google account at any time from your <a href="https://myaccount.google.com/permissions" rel="noopener">Google Account permissions</a>.</li>
+    </ul>
+
+    <h2>Changes</h2>
+    <p>If this policy changes, we will update this page and the date above.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy: <a href="mailto:stock.flow.dbms@gmail.com">stock.flow.dbms@gmail.com</a>.</p>
+
+    {% else %}
+    <h1>Terms of Service</h1>
+    <div class="updated">Last updated 19 October 2026</div>
+    <p class="intro">
+      By signing in to or using StockFlow, you agree to these terms. If you do not agree, please do not use the service.
+    </p>
+
+    <h2>About StockFlow</h2>
+    <p>
+      StockFlow is a demonstration marketplace for buyers and sellers. It is provided for learning and
+      demonstration purposes and is not a commercial store.
+    </p>
+
+    <h2>Accounts</h2>
+    <ul>
+      <li>You sign in with your Google account and choose whether you are a buyer or a seller. The same Google account can have one buyer and one seller account.</li>
+      <li>You are responsible for activity under your account and for keeping your Google account secure.</li>
+    </ul>
+
+    <h2>Wallet and orders</h2>
+    <ul>
+      <li>Wallet balances are <strong>virtual</strong>. They have no cash value, cannot be withdrawn and are not real money.</li>
+      <li>Orders, approvals and refunds happen inside the app only. No real goods are bought, sold or shipped through StockFlow.</li>
+    </ul>
+
+    <h2>Your content</h2>
+    <ul>
+      <li>Sellers are responsible for the listings, descriptions and images they upload, and must have the right to use them.</li>
+      <li>Do not upload content that is illegal, misleading, offensive or that infringes someone else's rights. We may remove such content or accounts.</li>
+    </ul>
+
+    <h2>Acceptable use</h2>
+    <p>
+      Do not attempt to disrupt the service, access other users' accounts or data, or use the service for spam
+      or automated abuse.
+    </p>
+
+    <h2>Chatbot</h2>
+    <p>
+      The customer-service chatbot is powered by an AI model and may give inaccurate answers. Do not rely on it
+      for important decisions.
+    </p>
+
+    <h2>No warranty</h2>
+    <p>
+      StockFlow is provided "as is", without warranties of any kind. It may be changed, interrupted or shut down
+      at any time, and data may be reset. To the extent permitted by law, the StockFlow team is not liable for any
+      loss arising from your use of the service.
+    </p>
+
+    <h2>Privacy</h2>
+    <p>How we handle your information is described in our <a href="{% url 'privacy_policy' %}">Privacy Policy</a>.</p>
+
+    <h2>Changes</h2>
+    <p>We may update these terms. Continuing to use StockFlow after an update means you accept the new terms.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about these terms: <a href="mailto:stock.flow.dbms@gmail.com">stock.flow.dbms@gmail.com</a>.</p>
+    {% endif %}
+  </main>
+
+  <footer>
+    <span>© 2026 StockFlow</span>
+    <a href="{% url 'privacy_policy' %}">Privacy Policy</a>
+    <a href="{% url 'terms_of_service' %}">Terms of Service</a>
+  </footer>
+</body>
+</html>

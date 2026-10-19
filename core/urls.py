@@ -4,6 +4,8 @@ from core.chatbot_view import chatbot
 from core.google_oauth import google_login, google_callback
 urlpatterns = [
     path('', views.home, name='home'),
+    path('privacy/', views.privacy_policy, name='privacy_policy'),
+    path('terms/', views.terms_of_service, name='terms_of_service'),
     path('signout/', views.signout, name='signout'),
 
     path('auth/signin/', views.signin_page, name='signin_page'),

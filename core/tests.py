@@ -138,6 +138,13 @@ class AccountSessionTests(TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertIsNone(self.client.session.get('user_id'))
 
+	def test_privacy_and_terms_pages_are_public(self):
+		privacy = self.client.get(reverse('privacy_policy'))
+		terms = self.client.get(reverse('terms_of_service'))
+
+		self.assertContains(privacy, 'Privacy Policy')
+		self.assertContains(terms, 'Terms of Service')
+
 	def test_signup_page_redirects_to_signin_page(self):
 		response = self.client.get(reverse('signup_page'))
 		self.assertRedirects(response, reverse('signin_page'))

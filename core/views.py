@@ -1,18 +1,7 @@
-import json
-import random
-import smtplib
 from decimal import Decimal, InvalidOperation
-from datetime import timedelta
 
-from django.contrib.auth.hashers import check_password, make_password
-from django.contrib.auth import update_session_auth_hash
 from django.shortcuts import render, redirect
 from django.contrib import messages
-from django.utils import timezone
-from django.core.mail import send_mail
-from django.core.validators import validate_email
-from django.core.exceptions import ValidationError
-from django.conf import settings
 from core.models import *
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -163,29 +152,6 @@ def _get_user_model(user_type):
     return None
 
 
-def _serialize_user(user, user_type):
-    return {
-        'id': user.id,
-        'name': user.name,
-        'email': user.email,
-        'phone': user.phone,
-        'user_type': user_type,
-    }
-
-
-def _parse_json_body(request):
-    try:
-        raw_body = request.body.decode('utf-8') if request.body else '{}'
-        payload = json.loads(raw_body)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, JsonResponse({'success': False, 'message': 'Invalid JSON body.'}, status=400)
-
-    if not isinstance(payload, dict):
-        return None, JsonResponse({'success': False, 'message': 'JSON body must be an object.'}, status=400)
-
-    return payload, None
-
-
 def _method_not_allowed():
     return JsonResponse({'success': False, 'message': 'Method not allowed.'}, status=405)
 
@@ -217,114 +183,12 @@ def _get_or_create_wallet(user):
     return wallet
 
 
-def _generate_otp_code():
-    return f"{random.randint(100000, 999999)}"
-
-
-def _verify_email_exists(email):
-    """Best-effort check before OTP send.
-
-    This validates syntax and asks SMTP if recipient is accepted via RCPT.
-    Not all providers disclose existence, so non-auth/network errors are treated
-    as inconclusive (and we allow OTP send attempt to continue).
-    """
-    try:
-        validate_email(email)
-    except ValidationError:
-        return False, 'Please enter a valid email address.'
-
-    # Skip manual SMTP verification in development mode to avoid authentication errors.
-    if settings.DEBUG:
-        return True, ''
-
-    try:
-        with smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT, timeout=12) as server:
-            if settings.EMAIL_USE_TLS:
-                server.starttls()
-            server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
-            server.mail(settings.DEFAULT_FROM_EMAIL or settings.EMAIL_HOST_USER)
-            code, _ = server.rcpt(email)
-            server.rset()
-
-        if code in (250, 251):
-            return True, ''
-        if code >= 500:
-            return False, 'This email address appears invalid or unreachable.'
-        return True, ''
-    except smtplib.SMTPAuthenticationError as exc:
-        raise RuntimeError(
-            'SMTP authentication failed. If you are using Gmail, use a Google App Password in EMAIL_HOST_PASSWORD.'
-        ) from exc
-    except Exception:
-        # Inconclusive check (provider/network policy). Let OTP send attempt decide.
-        return True, ''
-
-
-def _send_otp_email(email, otp_code, purpose):
-    purpose_label = 'account signup' if purpose == 'signup' else 'password reset'
-    subject = f"StockFlow OTP for {purpose_label}"
-    message = (
-        f"Your StockFlow OTP is: {otp_code}\n\n"
-        f"This OTP is valid for 10 minutes.\n"
-        f"If you did not request this, please ignore this email."
-    )
-    try:
-        send_mail(
-            subject,
-            message,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            fail_silently=False,
-        )
-    except smtplib.SMTPAuthenticationError as exc:
-        raise RuntimeError(
-            'SMTP authentication failed. If you are using Gmail, use a Google App Password in EMAIL_HOST_PASSWORD.'
-        ) from exc
-
-
-def _create_and_send_otp(email, user_type, purpose):
-    # Invalidate older active OTPs for this email/type/purpose.
-    EmailOTP.objects.filter(
-        email=email,
-        user_type=user_type,
-        purpose=purpose,
-        is_used=False,
-    ).update(is_used=True)
-
-    otp_code = _generate_otp_code()
-    # Keep predictable OTP only for local console-email debugging.
-    if settings.DEBUG and settings.EMAIL_BACKEND == 'django.core.mail.backends.console.EmailBackend':
-        otp_code = '123456'
-    EmailOTP.objects.create(
-        email=email,
-        user_type=user_type,
-        purpose=purpose,
-        otp_hash=make_password(otp_code),
-        expires_at=timezone.now() + timedelta(minutes=10),
-    )
-    _send_otp_email(email, otp_code, purpose)
-
-
-def _verify_latest_otp(email, user_type, purpose, otp_code):
-    record = EmailOTP.objects.filter(
-        email=email,
-        user_type=user_type,
-        purpose=purpose,
-        is_used=False,
-    ).order_by('-created_at').first()
-
-    if not record:
-        return False, 'No OTP request found. Please request a new OTP.'
-
-    if timezone.now() > record.expires_at:
-        return False, 'OTP has expired. Please request a new OTP.'
-
-    if not check_password(otp_code, record.otp_hash):
-        return False, 'Invalid OTP. Please try again.'
-
-    record.is_used = True
-    record.save(update_fields=['is_used'])
-    return True, ''
+def _login_session(request, user, user_type):
+    """Start a fresh session for the signed-in buyer/seller."""
+    request.session.cycle_key()
+    request.session['user_id'] = user.id
+    request.session['user_type'] = user_type
+    request.session['user_name'] = user.name
 
 
 def _render_items_page(request, filter_sold_out=False):
@@ -437,101 +301,6 @@ def sold_out_items(request):
 
 
 @csrf_exempt
-def signup(request):
-    if request.method == 'GET':
-        return redirect('signup_page')
-
-    if request.method != 'POST':
-        return _method_not_allowed()
-
-    payload, error_response = _parse_json_body(request)
-    if error_response:
-        return error_response
-
-    name = str(payload.get('name', '')).strip()
-    email = str(payload.get('email', '')).strip().lower()
-    phone = str(payload.get('phone', '')).strip()
-    password = str(payload.get('password', '')).strip()
-    user_type = str(payload.get('user_type', '')).strip().lower()
-
-    if not all([name, email, phone, password, user_type]):
-        return JsonResponse({'success': False, 'message': 'name, email, phone, password and user_type are required.'}, status=400)
-
-    if len(password) < 8:
-        return JsonResponse({'success': False, 'message': 'New password must be at least 8 characters.'}, status=400)
-
-    user_model = _get_user_model(user_type)
-    if not user_model:
-        return JsonResponse({'success': False, 'message': 'user_type must be either buyer or seller.'}, status=400)
-
-    if user_model.objects.filter(email=email).exists():
-        return JsonResponse({'success': False, 'message': 'An account with this email already exists.'}, status=409)
-
-    user = user_model.objects.create(
-        name=name,
-        email=email,
-        phone=phone,
-        password=make_password(password),
-    )
-    # Auto-create wallet for new user
-    _get_or_create_wallet(user)
-
-    request.session['user_id'] = user.id
-    request.session['user_type'] = user_type
-    request.session['user_name'] = user.name
-
-    return JsonResponse(
-        {
-            'success': True,
-            'message': 'Signup successful.',
-            'user': _serialize_user(user, user_type),
-        },
-        status=201,
-    )
-
-
-@csrf_exempt
-def signin(request):
-    if request.method == 'GET':
-        return redirect('signin_page')
-
-    if request.method != 'POST':
-        return _method_not_allowed()
-
-    payload, error_response = _parse_json_body(request)
-    if error_response:
-        return error_response
-
-    email = str(payload.get('email', '')).strip().lower()
-    password = str(payload.get('password', '')).strip()
-    user_type = str(payload.get('user_type', '')).strip().lower()
-
-    if not all([email, password, user_type]):
-        return JsonResponse({'success': False, 'message': 'email, password and user_type are required.'}, status=400)
-
-    user_model = _get_user_model(user_type)
-    if not user_model:
-        return JsonResponse({'success': False, 'message': 'user_type must be either buyer or seller.'}, status=400)
-
-    user = user_model.objects.filter(email=email).first()
-    if not user or not check_password(password, user.password):
-        return JsonResponse({'success': False, 'message': 'Invalid credentials.'}, status=401)
-
-    request.session['user_id'] = user.id
-    request.session['user_type'] = user_type
-    request.session['user_name'] = user.name
-
-    return JsonResponse(
-        {
-            'success': True,
-            'message': 'Signin successful.',
-            'user': _serialize_user(user, user_type),
-        },
-        status=200,
-    )
-
-
-@csrf_exempt
 def signout(request):
     if request.method == 'GET':
         return redirect('signout_page')
@@ -544,243 +313,13 @@ def signout(request):
 
 
 def signup_page(request):
-    if request.method == 'POST':
-        name = request.POST.get('name', '').strip()
-        email = request.POST.get('email', '').strip().lower()
-        phone = request.POST.get('phone', '').strip()
-        password = request.POST.get('password', '').strip()
-        confirm = request.POST.get('confirm', '').strip()
-        user_type = request.POST.get('user_type', '')
-
-        if not all([name, email, phone, password]):
-            messages.error(request, 'All fields are required.')
-        elif len(password) < 8:
-            messages.error(request, 'New password must be at least 8 characters.')
-        elif password != confirm:
-            messages.error(request, 'Passwords do not match.')
-        elif user_type not in ('buyer', 'seller'):
-            messages.error(request, 'Please select buyer or seller.')
-        else:
-            user_model = _get_user_model(user_type)
-            if user_model.objects.filter(email=email).exists():
-                messages.error(request, f'An account with this email already exists. Please sign in.')
-            else:
-                try:
-                    email_ok, email_error = _verify_email_exists(email)
-                    if not email_ok:
-                        messages.error(request, email_error)
-                        return redirect('signup_page')
-
-                    _create_and_send_otp(email, user_type, 'signup')
-                except Exception as exc:
-                    messages.error(request, f'Unable to send OTP right now. {exc}')
-                else:
-                    request.session['pending_signup'] = {
-                        'name': name,
-                        'email': email,
-                        'phone': phone,
-                        'password_hash': make_password(password),
-                        'user_type': user_type,
-                    }
-                    messages.success(request, 'OTP sent to your email. Please verify to complete signup.')
-                    return redirect('verify_signup_page')
-
-    return render(request, 'auth.html')
-
-
-def verify_signup_page(request):
-    pending = request.session.get('pending_signup')
-    if not pending:
-        messages.error(request, 'No pending signup found. Please sign up again.')
-        return redirect('signup_page')
-
-    if request.method == 'POST':
-        action = request.POST.get('action', 'verify').strip()
-
-        if action == 'resend':
-            try:
-                _create_and_send_otp(pending['email'], pending['user_type'], 'signup')
-                messages.success(request, 'A new OTP has been sent to your email.')
-            except Exception:
-                messages.error(request, 'Unable to resend OTP right now. Please try again.')
-            return redirect('verify_signup_page')
-
-        otp = request.POST.get('otp', '').strip()
-        if not otp:
-            messages.error(request, 'Please enter the OTP sent to your email.')
-            return redirect('verify_signup_page')
-
-        valid, error_message = _verify_latest_otp(
-            pending['email'],
-            pending['user_type'],
-            'signup',
-            otp,
-        )
-        if not valid:
-            messages.error(request, error_message)
-            return redirect('verify_signup_page')
-
-        user_model = _get_user_model(pending['user_type'])
-        if user_model.objects.filter(email=pending['email']).exists():
-            request.session.pop('pending_signup', None)
-            messages.error(request, 'An account with this email already exists. Please sign in.')
-            return redirect('signin_page')
-
-        new_user = user_model.objects.create(
-            name=pending['name'],
-            email=pending['email'],
-            phone=pending['phone'],
-            password=pending['password_hash'],
-        )
-        _get_or_create_wallet(new_user)
-
-        request.session.pop('pending_signup', None)
-        messages.success(request, 'Email verified! Account created successfully. Please sign in.')
-        return redirect('signin_page')
-
-    return render(
-        request,
-        'verify_otp.html',
-        {
-            'flow_title': 'Verify Your Email',
-            'flow_subtitle': 'Enter the OTP sent to your email to complete signup.',
-            'email': pending.get('email', ''),
-            'post_url_name': 'verify_signup_page',
-        },
-    )
-
-
-def forgot_password_page(request):
-    if request.method == 'POST':
-        email = request.POST.get('email', '').strip().lower()
-        user_type = request.POST.get('user_type', '').strip().lower()
-
-        if not email or user_type not in ('buyer', 'seller'):
-            messages.error(request, 'Please provide a valid email and account type.')
-            return redirect('forgot_password_page')
-
-        user_model = _get_user_model(user_type)
-        user = user_model.objects.filter(email=email).first() if user_model else None
-        if not user:
-            messages.error(request, 'No account found for that email and account type.')
-            return redirect('forgot_password_page')
-
-        try:
-            email_ok, email_error = _verify_email_exists(email)
-            if not email_ok:
-                messages.error(request, email_error)
-                return redirect('forgot_password_page')
-
-            _create_and_send_otp(email, user_type, 'forgot_password')
-        except Exception as exc:
-            messages.error(request, f'Unable to send OTP right now. {exc}')
-            return redirect('forgot_password_page')
-
-        request.session['pending_password_reset'] = {
-            'email': email,
-            'user_type': user_type,
-        }
-        messages.success(request, 'OTP sent to your email. Enter it below to reset your password.')
-        return redirect('reset_password_page')
-
-    return render(request, 'forgot_password.html')
-
-
-def reset_password_page(request):
-    pending = request.session.get('pending_password_reset')
-    if not pending:
-        messages.error(request, 'No pending password reset found. Please request OTP first.')
-        return redirect('forgot_password_page')
-
-    if request.method == 'POST':
-        action = request.POST.get('action', 'reset').strip()
-
-        if action == 'resend':
-            try:
-                _create_and_send_otp(pending['email'], pending['user_type'], 'forgot_password')
-                messages.success(request, 'A new OTP has been sent to your email.')
-            except Exception:
-                messages.error(request, 'Unable to resend OTP right now. Please try again.')
-            return redirect('reset_password_page')
-
-        otp = request.POST.get('otp', '').strip()
-        new_password = request.POST.get('new_password', '').strip()
-        confirm_password = request.POST.get('confirm_password', '').strip()
-
-        if not all([otp, new_password, confirm_password]):
-            messages.error(request, 'OTP, new password, and confirm password are required.')
-            return redirect('reset_password_page')
-
-        if len(new_password) < 8:
-            messages.error(request, 'New password must be at least 8 characters.')
-            return redirect('reset_password_page')
-
-        if new_password != confirm_password:
-            messages.error(request, 'Passwords do not match.')
-            return redirect('reset_password_page')
-
-        valid, error_message = _verify_latest_otp(
-            pending['email'],
-            pending['user_type'],
-            'forgot_password',
-            otp,
-        )
-        if not valid:
-            messages.error(request, error_message)
-            return redirect('reset_password_page')
-
-        user_model = _get_user_model(pending['user_type'])
-        user = user_model.objects.filter(email=pending['email']).first() if user_model else None
-        if not user:
-            request.session.pop('pending_password_reset', None)
-            messages.error(request, 'Account not found.')
-            return redirect('forgot_password_page')
-
-        user.password = make_password(new_password)
-        user.save(update_fields=['password'])
-
-        request.session.pop('pending_password_reset', None)
-        messages.success(request, 'Password reset successful. Please sign in with your new password.')
-        return redirect('signin_page')
-
-    return render(
-        request,
-        'verify_otp.html',
-        {
-            'flow_title': 'Reset Password',
-            'flow_subtitle': 'Enter OTP and choose a new password.',
-            'email': pending.get('email', ''),
-            'post_url_name': 'reset_password_page',
-            'show_password_fields': True,
-        },
-    )
+    # Google sign-in creates the account on first login, so signup and signin share one page.
+    return redirect('signin_page')
 
 
 def signin_page(request):
     if request.method == 'POST':
-        email = request.POST.get('email', '').strip().lower()
-        password = request.POST.get('password', '').strip()
-        user_type = request.POST.get('user_type', '')
-
-        if not all([email, password, user_type]):
-            messages.error(request, 'Email, password, and account type are required.')
-        else:
-            user_model = _get_user_model(user_type)
-            if not user_model:
-                messages.error(request, 'Please select buyer or seller.')
-            else:
-                user = user_model.objects.filter(email=email).first()
-                if not user:
-                    messages.error(request, 'No account found with that email and account type.')
-                elif not user.password or not check_password(password, user.password):
-                    messages.error(request, 'Invalid password.')
-                else:
-                    request.session['user_id'] = user.id
-                    request.session['user_type'] = user_type
-                    request.session['user_name'] = user.name
-                    messages.success(request, f'Welcome back, {user.name}!')
-                    return redirect('home')
-
+        return redirect('signin_page')
     return render(request, 'auth.html')
 
 
@@ -793,7 +332,7 @@ def add_address(request):
     # Require login
     if 'user_id' not in request.session:
         messages.error(request, 'Please sign in first.')
-        return redirect('signin')
+        return redirect('signin_page')
 
     if request.method == 'POST':
         line1 = request.POST.get('line1', '').strip()
@@ -841,7 +380,7 @@ def order_history(request):
     # Only buyers can view order history
     if not request.session.get('user_id') or request.session.get('user_type') != 'buyer':
         messages.error(request, 'You must be signed in as a buyer to view your orders.')
-        return redirect('signin')
+        return redirect('signin_page')
 
     buyer = Buyer.objects.get(id=request.session['user_id'])
     orders = (
@@ -870,7 +409,7 @@ def cart(request):
     """Show the buyer's cart with an address selector."""
     if not request.session.get('user_id') or request.session.get('user_type') != 'buyer':
         messages.error(request, 'You must be signed in as a buyer to view your cart.')
-        return redirect('signin')
+        return redirect('signin_page')
 
     buyer = Buyer.objects.get(id=request.session['user_id'])
 
@@ -921,14 +460,14 @@ def cart(request):
 
 def checkout(request):
     """POST-only: place an order from the buyer's cart.
-    Orders start as 'Pending' — inventory is NOT deducted until all sellers approve.
+    Orders start as 'Pending' â€” inventory is NOT deducted until all sellers approve.
     """
     if request.method != 'POST':
         return redirect('cart')
 
     if not request.session.get('user_id') or request.session.get('user_type') != 'buyer':
         messages.error(request, 'You must be signed in as a buyer to checkout.')
-        return redirect('signin')
+        return redirect('signin_page')
 
     buyer = Buyer.objects.get(id=request.session['user_id'])
 
@@ -960,7 +499,7 @@ def checkout(request):
                 Inventory.objects
                 .filter(product_id__in=product_ids)
             )
-            # Build map: product_id → total stock across all warehouses
+            # Build map: product_id â†’ total stock across all warehouses
             inv_totals = {}
             for inv in inventory_qs:
                 inv_totals[inv.product_id] = inv_totals.get(inv.product_id, 0) + max(inv.quantity, 0)
@@ -977,12 +516,12 @@ def checkout(request):
             # Compute total
             total_amount = sum(ci.product.price * ci.quantity for ci in cart_items)
 
-            # ── WALLET: Debit buyer ──
+            # â”€â”€ WALLET: Debit buyer â”€â”€
             buyer_wallet = _get_or_create_wallet(buyer)
             if buyer_wallet.balance < total_amount:
                 raise ValueError(
-                    f"Insufficient wallet balance. Your balance is ₹{buyer_wallet.balance} "
-                    f"but the order total is ₹{total_amount}. Please add funds first."
+                    f"Insufficient wallet balance. Your balance is â‚¹{buyer_wallet.balance} "
+                    f"but the order total is â‚¹{total_amount}. Please add funds first."
                 )
             buyer_wallet.balance -= total_amount
             buyer_wallet.save()
@@ -1005,7 +544,7 @@ def checkout(request):
                 description=f"Payment for order #{order.id} (held in escrow until seller approval)",
             )
 
-            # Create order items — all start as Pending
+            # Create order items â€” all start as Pending
             order_items_by_seller = {}
             for ci in cart_items:
                 line_total = ci.product.price * ci.quantity
@@ -1022,7 +561,7 @@ def checkout(request):
                     order_items_by_seller[seller.id] = {'seller': seller, 'items': []}
                 order_items_by_seller[seller.id]['items'].append(oi)
 
-            # ── Notification for the BUYER ──
+            # â”€â”€ Notification for the BUYER â”€â”€
             seller_names = ', '.join(
                 data['seller'].name for data in order_items_by_seller.values()
             )
@@ -1040,16 +579,16 @@ def checkout(request):
                 order=order,
                 notification_type='wallet_debited',
                 message=(
-                    f"₹{total_amount} has been debited from your wallet for order #{order.id}. "
+                    f"â‚¹{total_amount} has been debited from your wallet for order #{order.id}. "
                     f"This amount is held in escrow until all sellers respond."
                 ),
             )
 
-            # ── Notifications for each SELLER ──
+            # â”€â”€ Notifications for each SELLER â”€â”€
             for seller_id, data in order_items_by_seller.items():
                 seller = data['seller']
                 product_list = ', '.join(
-                    f"{oi.product.name} (×{oi.quantity})" for oi in data['items']
+                    f"{oi.product.name} (Ã—{oi.quantity})" for oi in data['items']
                 )
                 for oi in data['items']:
                     Notification.objects.create(
@@ -1059,8 +598,8 @@ def checkout(request):
                         notification_type='approval_request',
                         message=(
                             f"Buyer {buyer.name} placed order #{order.id} "
-                            f"including your product '{oi.product.name}' (×{oi.quantity}, "
-                            f"₹{oi.line_total}). Please approve or reject this item."
+                            f"including your product '{oi.product.name}' (Ã—{oi.quantity}, "
+                            f"â‚¹{oi.line_total}). Please approve or reject this item."
                         ),
                     )
 
@@ -1076,7 +615,7 @@ def checkout(request):
 
     messages.success(
         request,
-        f'Order #{order.id} placed! ₹{total_amount} debited from your wallet (held in escrow).'
+        f'Order #{order.id} placed! â‚¹{total_amount} debited from your wallet (held in escrow).'
     )
     return redirect('order_history')
 
@@ -1144,7 +683,7 @@ def cart_update(request, product_id):
         cart=cart_obj, product_id=product_id
     ).update(quantity=qty)
     if updated:
-        messages.success(request, f'Cart updated — {qty} × {product.name}.')
+        messages.success(request, f'Cart updated â€” {qty} Ã— {product.name}.')
     else:
         messages.error(request, 'Item not found in cart.')
     return redirect('cart')
@@ -1202,7 +741,7 @@ def item_detail(request, product_id):
                 return redirect('item_detail', product_id=product.id)
             cart_product.quantity = new_qty
             cart_product.save()
-            messages.success(request, f'Updated cart — now {new_qty} × {product.name}.')
+            messages.success(request, f'Updated cart â€” now {new_qty} Ã— {product.name}.')
         else:
             if qty > available_stock:
                 messages.error(
@@ -1211,7 +750,7 @@ def item_detail(request, product_id):
                 )
                 return redirect('item_detail', product_id=product.id)
             CartProduct.objects.create(cart=cart, product=product, quantity=qty)
-            messages.success(request, f'Added {qty} × {product.name} to your cart.')
+            messages.success(request, f'Added {qty} Ã— {product.name} to your cart.')
 
         return redirect('item_detail', product_id=product.id)
 
@@ -1284,6 +823,7 @@ def profile(request):
         'total_earned': total_earned,
         'user_name':   user.name,
         'user_email':  user.email,
+        'user_phone':  user.phone,
         'user_type':   user_type,
         'unread_notification_count': _get_unread_notification_count(request),
     })
@@ -1299,7 +839,7 @@ def delete_order(request, order_id):
         if not order:
             messages.error(request, 'Order not found.')
         elif order.status == 'Pending':
-            messages.error(request, 'Cannot delete a pending order — wait for seller response, or it will be auto-resolved.')
+            messages.error(request, 'Cannot delete a pending order â€” wait for seller response, or it will be auto-resolved.')
         else:
             order.delete()
             messages.success(request, f'Order #{order_id} removed from your history.')
@@ -1357,36 +897,14 @@ def update_profile(request):
     if request.method == 'POST':
         buyer = Buyer.objects.get(id=request.session['user_id'])
         name  = request.POST.get('name', '').strip()
-        email = request.POST.get('email', '').strip()
+        phone = request.POST.get('phone', '').strip()
         if name:
             buyer.name = name
             request.session['user_name'] = name   # keep session in sync
-        if email:
-            buyer.email = email
+        # Email comes from Google sign-in, so only name and phone are editable.
+        buyer.phone = phone[:20]
         buyer.save()
         messages.success(request, 'Profile updated.')
-    return redirect('profile')
-
-
-def change_password(request):
-    if 'user_id' not in request.session or request.session.get('user_type') != 'buyer':
-        return redirect('signin_page')
-
-    if request.method == 'POST':
-        buyer        = Buyer.objects.get(id=request.session['user_id'])
-        old_password = request.POST.get('old_password', '')
-        new_password = request.POST.get('new_password', '')
-
-        if not check_password(old_password, buyer.password):
-            messages.error(request, 'Current password is incorrect.')
-            return redirect('profile')
-        if len(new_password) < 8:
-            messages.error(request, 'New password must be at least 8 characters.')
-            return redirect('profile')
-
-        buyer.password = make_password(new_password)
-        buyer.save()
-        messages.success(request, 'Password changed successfully.')
     return redirect('profile')
 
 
@@ -1403,9 +921,9 @@ def delete_account(request):
     return redirect('profile')
 
 
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NOTIFICATION VIEWS
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _get_unread_notification_count(request):
     """Return the unread notification count for the current session user."""
@@ -1448,7 +966,7 @@ def notifications(request):
 
 
 def seller_approve_item(request, item_id):
-    """Seller approves an order item. If ALL items approved → order Confirmed + deduct inventory."""
+    """Seller approves an order item. If ALL items approved â†’ order Confirmed + deduct inventory."""
     if request.method != 'POST':
         return redirect('notifications')
 
@@ -1494,7 +1012,7 @@ def seller_approve_item(request, item_id):
             notification_type='item_approved',
             message=(
                 f"Seller {user.name} has approved '{order_item.product.name}' "
-                f"(×{order_item.quantity}) in your order #{order.id}."
+                f"(Ã—{order_item.quantity}) in your order #{order.id}."
             ),
         )
 
@@ -1506,14 +1024,14 @@ def seller_approve_item(request, item_id):
             order.status = 'Confirmed'
             order.save()
 
-            # Deduct inventory NOW — atomically using F() expressions
+            # Deduct inventory NOW â€” atomically using F() expressions
             for item in all_items:
                 Inventory.objects.filter(product=item.product).update(
                     quantity=F('quantity') - item.quantity
                 )
 
-            # ── WALLET: Credit each seller their portion ──
-            seller_totals = {}  # seller_id → total amount
+            # â”€â”€ WALLET: Credit each seller their portion â”€â”€
+            seller_totals = {}  # seller_id â†’ total amount
             for item in all_items:
                 sid = item.product.seller_id
                 seller_totals[sid] = seller_totals.get(sid, Decimal('0')) + item.line_total
@@ -1529,15 +1047,15 @@ def seller_approve_item(request, item_id):
                     transaction_type='credit',
                     amount=amount,
                     balance_after=seller_wallet.balance,
-                    description=f"Payment received for order #{order.id} — all sellers approved",
+                    description=f"Payment received for order #{order.id} â€” all sellers approved",
                 )
                 Notification.objects.create(
                     seller_id=sid,
                     order=order,
                     notification_type='wallet_credited',
                     message=(
-                        f"₹{amount} has been credited to your wallet for order #{order.id}. "
-                        f"All sellers approved — escrow released."
+                        f"â‚¹{amount} has been credited to your wallet for order #{order.id}. "
+                        f"All sellers approved â€” escrow released."
                     ),
                 )
 
@@ -1548,7 +1066,7 @@ def seller_approve_item(request, item_id):
                 notification_type='order_confirmed',
                 message=(
                     f"Great news! All sellers have approved your order #{order.id}. "
-                    f"Your order is now confirmed and being processed. Total: ₹{order.total_amount}."
+                    f"Your order is now confirmed and being processed. Total: â‚¹{order.total_amount}."
                 ),
             )
 
@@ -1557,7 +1075,7 @@ def seller_approve_item(request, item_id):
 
 
 def seller_reject_item(request, item_id):
-    """Seller rejects an order item → entire order gets Rejected."""
+    """Seller rejects an order item â†’ entire order gets Rejected."""
     if request.method != 'POST':
         return redirect('notifications')
 
@@ -1592,7 +1110,7 @@ def seller_reject_item(request, item_id):
         # Mark ALL remaining pending items in this order as Rejected
         order.items.filter(status='Pending').update(status='Rejected')
 
-        # ── WALLET: Refund the buyer ──
+        # â”€â”€ WALLET: Refund the buyer â”€â”€
         buyer_wallet = _get_or_create_wallet(order.buyer)
         buyer_wallet.balance += order.total_amount
         buyer_wallet.save()
@@ -1603,7 +1121,7 @@ def seller_reject_item(request, item_id):
             amount=order.total_amount,
             balance_after=buyer_wallet.balance,
             description=(
-                f"Refund for rejected order #{order.id} — "
+                f"Refund for rejected order #{order.id} â€” "
                 f"seller {user.name} declined '{order_item.product.name}'"
             ),
         )
@@ -1636,7 +1154,7 @@ def seller_reject_item(request, item_id):
             order=order,
             notification_type='wallet_refunded',
             message=(
-                f"₹{order.total_amount} has been refunded to your wallet "
+                f"â‚¹{order.total_amount} has been refunded to your wallet "
                 f"for rejected order #{order.id}."
             ),
         )
@@ -1700,9 +1218,9 @@ def mark_all_notifications_read(request):
     return redirect('notifications')
 
 
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WALLET VIEWS
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def wallet_page(request):
     """Wallet page for both buyers and sellers."""
@@ -1738,7 +1256,7 @@ def wallet_page(request):
 
 
 def add_funds(request):
-    """POST-only: add ₹10,000 to the user's wallet."""
+    """POST-only: add â‚¹10,000 to the user's wallet."""
     if request.method != 'POST':
         return redirect('wallet')
 
@@ -1759,89 +1277,8 @@ def add_funds(request):
             transaction_type='add_funds',
             amount=amount,
             balance_after=user_wallet.balance,
-            description='Added ₹10,000 to wallet',
+            description='Added â‚¹10,000 to wallet',
         )
 
-    messages.success(request, '₹10,000 added to your wallet!')
+    messages.success(request, 'â‚¹10,000 added to your wallet!')
     return redirect('wallet')
-
-    # ──────────────────────────────────────────────────────────────
-# FORGOT / RESET PASSWORD VIEWS
-# Add these functions to the bottom of core/views.py
-# ──────────────────────────────────────────────────────────────
-
-def forgot_password(request):
-    """
-    Step 1: User enters their email + user type.
-    If found, store the user identity in session and redirect to reset page.
-    """
-    if request.method == 'POST':
-        email     = request.POST.get('email', '').strip().lower()
-        user_type = request.POST.get('user_type', '').strip().lower()
-
-        if not email or user_type not in ('buyer', 'seller'):
-            messages.error(request, 'Please enter your email and select account type.')
-            return render(request, 'forgot_password.html')
-
-        user_model = _get_user_model(user_type)
-        user = user_model.objects.filter(email=email).first()
-
-        if not user:
-            # Don't reveal whether account exists — show same message either way
-            messages.error(request, 'No account found with that email and account type.')
-            return render(request, 'forgot_password.html')
-
-        # Store reset intent in session (not a full login)
-        request.session['reset_user_id']   = user.id
-        request.session['reset_user_type'] = user_type
-        messages.success(request, f'Account found. Please set your new password.')
-        return redirect('reset_password')
-
-    return render(request, 'forgot_password.html')
-
-
-def reset_password(request):
-    """
-    Step 2: User sets a new password.
-    Requires reset_user_id + reset_user_type to be in session (set by forgot_password).
-    """
-    reset_id   = request.session.get('reset_user_id')
-    reset_type = request.session.get('reset_user_type')
-
-    # Guard: must have come through forgot_password first
-    if not reset_id or not reset_type:
-        messages.error(request, 'Please start from the forgot password page.')
-        return redirect('forgot_password')
-
-    if request.method == 'POST':
-        new_password     = request.POST.get('new_password', '').strip()
-        confirm_password = request.POST.get('confirm_password', '').strip()
-
-        if not new_password or not confirm_password:
-            messages.error(request, 'Both fields are required.')
-        elif len(new_password) < 8:
-            messages.error(request, 'Password must be at least 8 characters.')
-        elif new_password != confirm_password:
-            messages.error(request, 'Passwords do not match.')
-        else:
-            user_model = _get_user_model(reset_type)
-            user = user_model.objects.filter(id=reset_id).first()
-
-            if not user:
-                messages.error(request, 'Account not found. Please try again.')
-                # Clear stale session keys
-                request.session.pop('reset_user_id', None)
-                request.session.pop('reset_user_type', None)
-                return redirect('forgot_password')
-
-            user.password = make_password(new_password)
-            user.save()
-
-            # Clear reset session keys
-            request.session.pop('reset_user_id', None)
-            request.session.pop('reset_user_type', None)
-
-            messages.success(request, 'Password reset successfully! Please sign in.')
-            return redirect('signin_page')
-
-    return render(request, 'reset_password.html')

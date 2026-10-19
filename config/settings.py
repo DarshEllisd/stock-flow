@@ -174,18 +174,6 @@ STORAGES = {
     },
 }
 
-# Email (OTP delivery)
-# You can force SMTP in development by setting EMAIL_BACKEND_MODE=smtp in .env.
-email_backend_mode = os.getenv('EMAIL_BACKEND_MODE', '').strip().lower()
-if email_backend_mode == 'smtp':
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-elif email_backend_mode == 'console':
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-else:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'stock.flow.dbms@gmail.com')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
+# Google sign-in (OAuth 2.0 web client from Google Cloud Console)
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')

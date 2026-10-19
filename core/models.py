@@ -4,7 +4,7 @@ from django.db import models
 class Buyer(models.Model):
     name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
-    phone = models.CharField(max_length=20)
+    phone = models.CharField(max_length=20, blank=True, default='')  # Google doesn't provide a phone number
     password = models.CharField(max_length=128, blank=True, default="")
     wallet = models.OneToOneField(
         'Wallet',
@@ -48,7 +48,7 @@ class Address(models.Model):
 class Seller(models.Model):
     name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
-    phone = models.CharField(max_length=20)
+    phone = models.CharField(max_length=20, blank=True, default='')  # Google doesn't provide a phone number
     password = models.CharField(max_length=128, blank=True, default="")
     wallet = models.OneToOneField(
         'Wallet',
@@ -60,34 +60,6 @@ class Seller(models.Model):
 
     def __str__(self):
         return self.name
-
-
-class EmailOTP(models.Model):
-    PURPOSE_CHOICES = [
-        ('signup', 'Signup Verification'),
-        ('forgot_password', 'Forgot Password'),
-    ]
-    USER_TYPE_CHOICES = [
-        ('buyer', 'Buyer'),
-        ('seller', 'Seller'),
-    ]
-
-    email = models.EmailField(db_index=True)
-    user_type = models.CharField(max_length=10, choices=USER_TYPE_CHOICES)
-    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES, db_index=True)
-    otp_hash = models.CharField(max_length=128)
-    expires_at = models.DateTimeField(db_index=True)
-    is_used = models.BooleanField(default=False, db_index=True)
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-
-    class Meta:
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['email', 'user_type', 'purpose', 'is_used']),
-        ]
-
-    def __str__(self):
-        return f"{self.email} [{self.user_type}] - {self.purpose}"
 
 
 class Category(models.Model):

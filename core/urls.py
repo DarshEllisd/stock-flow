@@ -1,18 +1,16 @@
 from django.urls import path
 from core import views
 from core.chatbot_view import chatbot
+from core.google_oauth import google_login, google_callback
 urlpatterns = [
     path('', views.home, name='home'),
-    path('signin/', views.signin,  name='signin'),
-    path('signup/', views.signup,  name='signup'),
     path('signout/', views.signout, name='signout'),
 
     path('auth/signin/', views.signin_page, name='signin_page'),
     path('auth/signup/', views.signup_page, name='signup_page'),
     path('auth/signout/', views.signout_page, name='signout_page'),
-    path('auth/verify-signup/', views.verify_signup_page, name='verify_signup_page'),
-    path('auth/forgot-password/', views.forgot_password_page, name='forgot_password_page'),
-    path('auth/reset-password/', views.reset_password_page, name='reset_password_page'),
+    path('auth/google/', google_login, name='google_login'),
+    path('auth/google/callback/', google_callback, name='google_callback'),
 
     # Abhi this is just dummy in the views.py, change it when needed
     path('products/', views.products, name='products'),
@@ -27,7 +25,6 @@ urlpatterns = [
     path('orders/', views.order_history, name='order_history'),
  path('profile/',                              views.profile,             name='profile'),
 path('profile/update/',                       views.update_profile,      name='update_profile'),
-path('profile/change-password/',              views.change_password,     name='change_password'),
 path('profile/delete-account/',               views.delete_account,      name='delete_account'),
 path('orders/<int:order_id>/delete/',         views.delete_order,        name='delete_order'),
 path('addresses/<int:address_id>/delete/',    views.delete_address,      name='delete_address'),
@@ -49,6 +46,4 @@ path('addresses/<int:address_id>/default/',   views.set_default_address, name='s
     # Wallet
     path('wallet/',            views.wallet_page, name='wallet'),
     path('wallet/add-funds/',  views.add_funds,   name='add_funds'),
-    path('auth/forgot-password/', views.forgot_password, name='forgot_password'),
-path('auth/reset-password/',  views.reset_password,  name='reset_password'),
 ]

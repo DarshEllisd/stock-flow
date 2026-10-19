@@ -1,143 +1,171 @@
+import base64
 import json
+import time
+from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Buyer, Inventory, Product, Seller
 
 
-class AuthApiTests(TestCase):
+def _fake_id_token(**claims):
+	payload = {
+		'iss': 'https://accounts.google.com',
+		'aud': 'test-client-id',
+		'exp': int(time.time()) + 300,
+		'email': 'alice@example.com',
+		'email_verified': True,
+		'name': 'Alice Google',
+	}
+	payload.update(claims)
+	encode = lambda data: base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b'=').decode()
+	return f"{encode({'alg': 'RS256'})}.{encode(payload)}.signature"
+
+
+@override_settings(GOOGLE_CLIENT_ID='test-client-id', GOOGLE_CLIENT_SECRET='test-secret')
+class GoogleAuthTests(TestCase):
+	def _start_login(self, user_type='buyer'):
+		response = self.client.get(reverse('google_login'), {'user_type': user_type})
+		return response, self.client.session.get('google_oauth')
+
+	def _callback(self, id_token, state=None):
+		_, pending = self._start_login(self._user_type)
+		with mock.patch('core.google_oauth._exchange_code', return_value={'id_token': id_token}) as exchange:
+			response = self.client.get(
+				reverse('google_callback'),
+				{'code': 'auth-code', 'state': state or pending['state']},
+			)
+		return response, exchange
+
+	_user_type = 'buyer'
+
+	def test_login_redirects_to_google_with_state_and_pkce(self):
+		response, pending = self._start_login('seller')
+
+		self.assertEqual(response.status_code, 302)
+		url = urlparse(response['Location'])
+		params = parse_qs(url.query)
+		self.assertEqual(url.netloc, 'accounts.google.com')
+		self.assertEqual(params['client_id'], ['test-client-id'])
+		self.assertEqual(params['state'], [pending['state']])
+		self.assertEqual(params['code_challenge_method'], ['S256'])
+		self.assertTrue(params['code_challenge'][0])
+		self.assertTrue(params['redirect_uri'][0].endswith('/auth/google/callback/'))
+		self.assertEqual(pending['user_type'], 'seller')
+
+	def test_login_rejects_invalid_user_type(self):
+		response, pending = self._start_login('admin')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertIsNone(pending)
+
+	def test_callback_creates_buyer_with_wallet_and_signs_in(self):
+		response, exchange = self._callback(_fake_id_token())
+
+		self.assertRedirects(response, reverse('home'))
+		buyer = Buyer.objects.get(email='alice@example.com')
+		self.assertEqual(buyer.name, 'Alice Google')
+		self.assertEqual(buyer.phone, '')
+		self.assertIsNotNone(buyer.wallet)
+		self.assertEqual(self.client.session['user_id'], buyer.id)
+		self.assertEqual(self.client.session['user_type'], 'buyer')
+		self.assertNotIn('google_oauth', self.client.session)
+		self.assertEqual(exchange.call_args.args[0], 'auth-code')
+
+	def test_callback_signs_existing_seller_into_their_account(self):
+		seller = Seller.objects.create(name='Sam Seller', email='sam@example.com')
+		self._user_type = 'seller'
+
+		response, _ = self._callback(_fake_id_token(email='SAM@example.com', name='Other Name'))
+
+		self.assertRedirects(response, reverse('home'))
+		self.assertEqual(Seller.objects.filter(email='sam@example.com').count(), 1)
+		self.assertFalse(Buyer.objects.filter(email='sam@example.com').exists())
+		self.assertEqual(self.client.session['user_id'], seller.id)
+		self.assertEqual(self.client.session['user_name'], 'Sam Seller')
+
+	def test_callback_rejects_state_mismatch(self):
+		response, exchange = self._callback(_fake_id_token(), state='forged-state')
+
+		self.assertRedirects(response, reverse('signin_page'))
+		exchange.assert_not_called()
+		self.assertFalse(Buyer.objects.exists())
+		self.assertIsNone(self.client.session.get('user_id'))
+
+	def test_callback_rejects_unverified_email(self):
+		response, _ = self._callback(_fake_id_token(email_verified=False))
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertFalse(Buyer.objects.exists())
+
+	def test_callback_rejects_token_for_another_app(self):
+		response, _ = self._callback(_fake_id_token(aud='someone-else'))
+
+		self.assertRedirects(response, reverse('signin_page'))
+		self.assertFalse(Buyer.objects.exists())
+
+	def test_callback_cannot_be_replayed(self):
+		_, pending = self._start_login('buyer')
+		params = {'code': 'auth-code', 'state': pending['state']}
+		with mock.patch('core.google_oauth._exchange_code', return_value={'id_token': _fake_id_token()}):
+			self.client.get(reverse('google_callback'), params)
+			self.client.post(reverse('signout'), data='{}', content_type='application/json')
+			replay = self.client.get(reverse('google_callback'), params)
+
+		self.assertRedirects(replay, reverse('signin_page'))
+		self.assertIsNone(self.client.session.get('user_id'))
+
+
+class AccountSessionTests(TestCase):
 	def setUp(self):
 		self.client = Client(enforce_csrf_checks=True)
 
-	def _post_json(self, url_name, payload=None):
-		return self.client.post(
-			reverse(url_name),
-			data=json.dumps(payload or {}),
-			content_type='application/json',
-		)
-
-	def test_signup_returns_201_and_user_payload(self):
-		response = self._post_json(
-			'signup',
-			{
-				'name': 'Alice Buyer',
-				'email': 'alice@example.com',
-				'phone': '1234567890',
-				'password': 'secret123',
-				'user_type': 'buyer',
-			},
-		)
-
-		self.assertEqual(response.status_code, 201)
-		body = response.json()
-		self.assertTrue(body['success'])
-		self.assertEqual(body['user']['email'], 'alice@example.com')
-		self.assertEqual(self.client.session.get('user_type'), 'buyer')
-
-	def test_signup_duplicate_email_returns_409(self):
-		self._post_json(
-			'signup',
-			{
-				'name': 'Alice Buyer',
-				'email': 'alice@example.com',
-				'phone': '1234567890',
-				'password': 'secret123',
-				'user_type': 'buyer',
-			},
-		)
-
-		second_response = self._post_json(
-			'signup',
-			{
-				'name': 'Alice Buyer 2',
-				'email': 'alice@example.com',
-				'phone': '9999999999',
-				'password': 'secret456',
-				'user_type': 'buyer',
-			},
-		)
-
-		self.assertEqual(second_response.status_code, 409)
-
-	def test_signin_success_returns_200(self):
-		self._post_json(
-			'signup',
-			{
-				'name': 'Bob Buyer',
-				'email': 'bob@example.com',
-				'phone': '1234567890',
-				'password': 'secret123',
-				'user_type': 'buyer',
-			},
-		)
-		self.client.post(reverse('signout'), data='{}', content_type='application/json')
-
-		response = self._post_json(
-			'signin',
-			{
-				'email': 'bob@example.com',
-				'password': 'secret123',
-				'user_type': 'buyer',
-			},
-		)
-
-		self.assertEqual(response.status_code, 200)
-		self.assertEqual(response.json()['user']['name'], 'Bob Buyer')
-
-	def test_signin_wrong_password_returns_401(self):
-		self._post_json(
-			'signup',
-			{
-				'name': 'Eve Buyer',
-				'email': 'eve@example.com',
-				'phone': '1234567890',
-				'password': 'right-pass',
-				'user_type': 'buyer',
-			},
-		)
-
-		response = self._post_json(
-			'signin',
-			{
-				'email': 'eve@example.com',
-				'password': 'wrong-pass',
-				'user_type': 'buyer',
-			},
-		)
-
-		self.assertEqual(response.status_code, 401)
+	def _sign_in(self, user, user_type):
+		session = self.client.session
+		session['user_id'] = user.id
+		session['user_type'] = user_type
+		session['user_name'] = user.name
+		session.save()
 
 	def test_signout_clears_session_and_returns_200(self):
-		self._post_json(
-			'signup',
-			{
-				'name': 'Sam Seller',
-				'email': 'sam@example.com',
-				'phone': '1234567890',
-				'password': 'secret123',
-				'user_type': 'seller',
-			},
-		)
+		seller = Seller.objects.create(name='Sam Seller', email='sam@example.com')
+		self._sign_in(seller, 'seller')
 
 		response = self.client.post(reverse('signout'), data='{}', content_type='application/json')
 
 		self.assertEqual(response.status_code, 200)
 		self.assertIsNone(self.client.session.get('user_id'))
 
+	def test_signup_page_redirects_to_signin_page(self):
+		response = self.client.get(reverse('signup_page'))
+		self.assertRedirects(response, reverse('signin_page'))
+
+	def test_update_profile_saves_name_and_phone_but_not_email(self):
+		buyer = Buyer.objects.create(name='Old Name', email='buyer@example.com')
+		self._sign_in(buyer, 'buyer')
+		self.client.get(reverse('profile'))
+		csrf_token = self.client.cookies['csrftoken'].value
+
+		self.client.post(
+			reverse('update_profile'),
+			{'name': 'New Name', 'phone': '9876543210', 'email': 'hacker@example.com'},
+			HTTP_X_CSRFTOKEN=csrf_token,
+		)
+
+		buyer.refresh_from_db()
+		self.assertEqual(buyer.name, 'New Name')
+		self.assertEqual(buyer.phone, '9876543210')
+		self.assertEqual(buyer.email, 'buyer@example.com')
+
 	def test_delete_account_removes_buyer_from_database(self):
 		buyer = Buyer.objects.create(
 			name='Delete Buyer',
 			email='delete-buyer@example.com',
 			phone='1234567890',
-			password='secret123',
 		)
-
-		session = self.client.session
-		session['user_id'] = buyer.id
-		session['user_type'] = 'buyer'
-		session['user_name'] = buyer.name
-		session.save()
+		self._sign_in(buyer, 'buyer')
 
 		self.client.get(reverse('profile'))
 		csrf_token = self.client.cookies['csrftoken'].value
@@ -153,14 +181,8 @@ class AuthApiTests(TestCase):
 			name='Delete Seller',
 			email='delete-seller@example.com',
 			phone='1234567890',
-			password='secret123',
 		)
-
-		session = self.client.session
-		session['user_id'] = seller.id
-		session['user_type'] = 'seller'
-		session['user_name'] = seller.name
-		session.save()
+		self._sign_in(seller, 'seller')
 
 		self.client.get(reverse('profile'))
 		csrf_token = self.client.cookies['csrftoken'].value
@@ -170,21 +192,6 @@ class AuthApiTests(TestCase):
 		self.assertRedirects(response, reverse('signin_page'))
 		self.assertFalse(Seller.objects.filter(id=seller.id).exists())
 		self.assertIsNone(self.client.session.get('user_id'))
-
-	def test_signup_post_without_csrf_token_is_allowed(self):
-		response = self._post_json(
-			'signup',
-			{
-				'name': 'No Csrf Buyer',
-				'email': 'nocsrf@example.com',
-				'phone': '1234567890',
-				'password': 'secret123',
-				'user_type': 'buyer',
-			},
-		)
-
-		self.assertEqual(response.status_code, 201)
-		self.assertTrue(Buyer.objects.filter(email='nocsrf@example.com').exists())
 
 
 class ItemsPageAuthTests(TestCase):
@@ -208,7 +215,7 @@ class ItemsPageAuthTests(TestCase):
 
 		response = self.client.get(reverse('items'))
 		self.assertEqual(response.status_code, 200)
-		self.assertContains(response, 'Items Page')
+		self.assertContains(response, 'StockFlow Item List')
 
 	def test_items_renders_for_valid_seller_session(self):
 		seller = Seller.objects.create(
@@ -226,7 +233,7 @@ class ItemsPageAuthTests(TestCase):
 
 		response = self.client.get(reverse('items'))
 		self.assertEqual(response.status_code, 200)
-		self.assertContains(response, 'Items Page')
+		self.assertContains(response, 'StockFlow Item List')
 
 	def test_items_redirects_home_for_invalid_user_type(self):
 		session = self.client.session

@@ -162,6 +162,14 @@ The app uses session-based auth, server-rendered HTML templates, and role-based 
 ## M. Hosting support documentation
 - `cloudflare-tunnel.md` added to explain local app exposure via Cloudflare Tunnel.
 
+## N. Vercel deployment
+- Deployed as a single Vercel Function (zero-config Django detection via `manage.py` / `WSGI_APPLICATION`).
+- **Database**: Neon Postgres (Vercel Marketplace). `DATABASE_URL` switches settings to Postgres; without it, local dev keeps SQLite.
+- **Migrations** run on every Vercel build (`[tool.vercel.scripts] build` in `pyproject.toml`); `collectstatic` runs automatically (`STATIC_ROOT`).
+- **Uploads**: product images go to a public Vercel Blob store via `core/storage.py` when `BLOB_READ_WRITE_TOKEN` is set.
+- **Env vars** (Preview + Production): `DJANGO_SECRET_KEY`, `DEBUG=False`, `EMAIL_*`, `DEFAULT_FROM_EMAIL`, `GEMINI_API_KEY`; Neon/Blob vars are injected by the integrations.
+- Deploy: `vercel deploy` (protected preview) → `vercel promote <url>` (production).
+
 ---
 
 ## 4) Data model outline

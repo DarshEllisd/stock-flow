@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+import dj_database_url
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -45,10 +46,14 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG') == 'True'
 
-ALLOWED_HOSTS = _env_list_with_defaults('ALLOWED_HOSTS', ['127.0.0.1', 'localhost', '.trycloudflare.com'])
-CSRF_TRUSTED_ORIGINS = _env_list_with_defaults('CSRF_TRUSTED_ORIGINS', ['https://*.trycloudflare.com'])
+ALLOWED_HOSTS = _env_list_with_defaults('ALLOWED_HOSTS', ['127.0.0.1', 'localhost', '.trycloudflare.com', '.vercel.app'])
+CSRF_TRUSTED_ORIGINS = _env_list_with_defaults('CSRF_TRUSTED_ORIGINS', ['https://*.trycloudflare.com', 'https://*.vercel.app'])
 USE_X_FORWARDED_HOST = os.getenv('USE_X_FORWARDED_HOST', 'True') == 'True'
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Only send session/CSRF cookies over HTTPS outside local development.
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
 
 
 # Application definition
@@ -96,12 +101,24 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# On Vercel, DATABASE_URL is injected by the Neon Postgres integration.
+# Locally (no DATABASE_URL) we keep using SQLite.
+if os.getenv('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(conn_max_age=60, conn_health_checks=True, ssl_require=True)
     }
-}
+    # Neon's pooled endpoint runs PgBouncer in transaction mode.
+    DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = True
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+
+# Existing migrations were generated with AutoField primary keys; keep them consistent.
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
 
 # Password validation
@@ -139,10 +156,23 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # Vercel runs collectstatic and serves this from its CDN
 
 # Media files (Uploaded images)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Vercel's filesystem is read-only, so uploads go to Vercel Blob when a token is configured.
+BLOB_READ_WRITE_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN', '')
+BLOB_BASE_URL = os.getenv('BLOB_BASE_URL', '').rstrip('/')
+STORAGES = {
+    'default': {
+        'BACKEND': 'core.storage.VercelBlobStorage' if BLOB_READ_WRITE_TOKEN else 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+}
 
 # Email (OTP delivery)
 # You can force SMTP in development by setting EMAIL_BACKEND_MODE=smtp in .env.

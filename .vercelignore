@@ -1,0 +1,15 @@
+# Keep secrets and local data out of Vercel deployments
+.env
+.env*
+db.sqlite3
+media/
+staticfiles/
+.venv/
+venv/
+.vscode/
+**/__pycache__/
+*.pyc
+frontend/
+.claude/
+.agents/
+skills-lock.json
